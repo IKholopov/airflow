@@ -1763,7 +1763,7 @@
                     "default": [
                         "bash",
                         "-c",
-                        "exec airflow scheduler"
+                        "ulimit -n 2048 && exec airflow scheduler"
                     ]
                 },
                 "updateStrategy": {
@@ -2163,7 +2163,7 @@
                     "default": [
                         "bash",
                         "-c",
-                        "exec airflow triggerer"
+                        "ulimit -n 2048 && exec airflow triggerer"
                     ]
                 },
                 "strategy": {
@@ -2480,7 +2480,7 @@
                     "default": [
                         "bash",
                         "-c",
-                        "exec airflow dag-processor"
+                        "ulimit -n 2048 && exec airflow dag-processor"
                     ]
                 },
                 "strategy": {
@@ -3209,7 +3209,7 @@
                     "default": [
                         "bash",
                         "-c",
-                        "exec airflow webserver"
+                        "ulimit -n 2048 && exec airflow webserver"
                     ]
                 },
                 "strategy": {
@@ -4940,7 +4940,7 @@
                     "default": [
                         "bash",
                         "-c",
-                        "exec airflow kubernetes cleanup-pods --namespace={{ .Release.Namespace }}"
+                        "ulimit -n 2048 && exec airflow kubernetes cleanup-pods --namespace={{ .Release.Namespace }}"
                     ]
                 },
                 "nodeSelector": {

@@ -640,7 +640,7 @@ scheduler:
   # Command to use when running the Airflow scheduler (templated).
   command: ~
   # Args to use when running the Airflow scheduler (templated).
-  args: ["bash", "-c", "exec airflow scheduler"]
+  args: ["bash", "-c", "ulimit -n 2048 && exec airflow scheduler"]
 
   # Update Strategy when scheduler is deployed as a StatefulSet
   # (when using LocalExecutor and workers.persistence)
@@ -903,7 +903,7 @@ webserver:
   # Command to use when running the Airflow webserver (templated).
   command: ~
   # Args to use when running the Airflow webserver (templated).
-  args: ["bash", "-c", "exec airflow webserver"]
+  args: ["bash", "-c", "ulimit -n 2048 && exec airflow webserver"]
 
   # Create ServiceAccount
   serviceAccount:
@@ -1044,7 +1044,7 @@ triggerer:
   # Command to use when running Airflow triggerers (templated).
   command: ~
   # Args to use when running Airflow triggerer (templated).
-  args: ["bash", "-c", "exec airflow triggerer"]
+  args: ["bash", "-c", "ulimit -n 2048 && exec airflow triggerer"]
 
   # Update Strategy for triggerers
   strategy:
@@ -1142,7 +1142,7 @@ dagProcessor:
   # Command to use when running Airflow dag processors (templated).
   command: ~
   # Args to use when running Airflow dag processor (templated).
-  args: ["bash", "-c", "exec airflow dag-processor"]
+  args: ["bash", "-c", "ulimit -n 2048 && exec airflow dag-processor"]
 
   # Update Strategy for dag processors
   strategy:
@@ -1617,7 +1617,7 @@ cleanup:
   # Command to use when running the cleanup cronjob (templated).
   command: ~
   # Args to use when running the cleanup cronjob (templated).
-  args: ["bash", "-c", "exec airflow kubernetes cleanup-pods --namespace={{ .Release.Namespace }}"]
+  args: ["bash", "-c", "ulimit -n 2048 && exec airflow kubernetes cleanup-pods --namespace={{ .Release.Namespace }}"]
 
 
   # Select certain nodes for airflow cleanup pods.
