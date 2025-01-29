@@ -315,7 +315,7 @@ def parse(what: StartupDetails) -> RuntimeTaskInstance:
     # TODO: Task-SDK:
     # Using DagBag here is about 98% wrong, but it'll do for now
 
-    from airflow.models.dagbag import DagBag
+    from airflow.models.dagbag import BundleContext, DagBag
 
     bundle_info = what.bundle_info
     bundle_instance = DagBundlesManager().get_bundle(
@@ -323,6 +323,11 @@ def parse(what: StartupDetails) -> RuntimeTaskInstance:
         version=bundle_info.version,
     )
     bundle_instance.initialize()
+    bundle_context = BundleContext(
+        name = bundle_instance.name,
+        root_path = bundle_instance.path,
+        version = bundle_instance.version,
+    )
 
     dag_absolute_path = os.fspath(Path(bundle_instance.path, what.dag_rel_path))
     bag = DagBag(
@@ -330,6 +335,7 @@ def parse(what: StartupDetails) -> RuntimeTaskInstance:
         include_examples=False,
         safe_mode=False,
         load_op_links=False,
+        bundle_context=bundle_context,
     )
     if TYPE_CHECKING:
         assert what.ti.dag_id

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import uuid6
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from sqlalchemy.sql import Select
 
     from airflow.models.dag_version import DagVersion
+    from airflow.models.dagbag import BundleContext
 
 log = logging.getLogger(__name__)
 
@@ -75,15 +77,23 @@ class DagCode(Base):
 
     @classmethod
     @provide_session
-    def write_code(cls, dag_version: DagVersion, fileloc: str, session: Session = NEW_SESSION) -> DagCode:
+    def write_code(
+            cls, 
+            dag_version: DagVersion, 
+            bundle_context: BundleContext, 
+            fileloc: str,
+            session: Session = NEW_SESSION,
+        ) -> DagCode:
         """
         Write code into database.
 
+        :param bundle_context: context of bundle being parsed
         :param fileloc: file path of DAG to sync
         :param session: ORM Session
         """
         log.debug("Writing DAG file %s into DagCode table", fileloc)
-        dag_code = DagCode(dag_version, fileloc, cls.get_code_from_file(fileloc))
+        full_filepath = os.path.join(bundle_context.root_path, fileloc)
+        dag_code = DagCode(dag_version, fileloc, cls.get_code_from_file(full_filepath))
         session.add(dag_code)
         log.debug("DAG file %s written into DagCode table", fileloc)
         return dag_code
@@ -169,11 +179,12 @@ class DagCode(Base):
 
     @classmethod
     @provide_session
-    def update_source_code(cls, dag_id: str, fileloc: str, session: Session = NEW_SESSION) -> None:
+    def update_source_code(cls, dag_id: str, bundle_context: BundleContext, fileloc: str, session: Session = NEW_SESSION) -> None:
         """
         Check if the source code of the DAG has changed and update it if needed.
 
         :param dag_id: Dag ID
+        :param bundle_context: context of bundle being parsed
         :param fileloc: The path of code file to read the code from
         :param session: The database session.
         :return: None
@@ -181,7 +192,8 @@ class DagCode(Base):
         latest_dagcode = cls.get_latest_dagcode(dag_id, session)
         if not latest_dagcode:
             return
-        new_source_code = cls.get_code_from_file(fileloc)
+        full_filepath = os.path.join(bundle_context.root_path, fileloc)
+        new_source_code = cls.get_code_from_file(full_filepath)
         new_source_code_hash = cls.dag_source_hash(new_source_code)
         if new_source_code_hash != latest_dagcode.source_code_hash:
             latest_dagcode.source_code = new_source_code

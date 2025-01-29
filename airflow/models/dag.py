@@ -33,6 +33,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    NamedTuple,
     TypeVar,
     Union,
     cast,
@@ -116,7 +117,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm.session import Session
 
     from airflow.models.abstractoperator import TaskStateChangeCallback
-    from airflow.models.dagbag import DagBag
+    from airflow.models.dagbag import BundleContext, DagBag
     from airflow.models.operator import Operator
     from airflow.serialization.serialized_objects import MaybeSerializedDAG
     from airflow.typing_compat import Literal
@@ -306,7 +307,6 @@ def _convert_max_consecutive_failed_dag_runs(val: int) -> int:
             f"Requires max_consecutive_failed_dag_runs >= 0"
         )
     return val
-
 
 @functools.total_ordering
 @attrs.define(hash=False, repr=False, eq=False, slots=False)
@@ -765,6 +765,11 @@ class DAG(TaskSDKDag, LoggingMixin):
     def get_bundle_version(self, session=NEW_SESSION) -> str | None:
         """Return the bundle version that was seen when this dag was processed."""
         return session.scalar(select(DagModel.bundle_version).where(DagModel.dag_id == self.dag_id))
+
+    @provide_session
+    def get_model_fileloc(self, session=NEW_SESSION) -> str | None:
+        """Return the relative fileloc that was set when this dag was processed."""
+        return session.scalar(select(DagModel.fileloc).where(DagModel.dag_id == self.dag_id))
 
     @methodtools.lru_cache(maxsize=None)
     @classmethod
@@ -1807,8 +1812,7 @@ class DAG(TaskSDKDag, LoggingMixin):
     @provide_session
     def bulk_write_to_db(
         cls,
-        bundle_name: str,
-        bundle_version: str | None,
+        bundle_context: BundleContext,
         dags: Collection[MaybeSerializedDAG],
         session: Session = NEW_SESSION,
     ):
@@ -1825,7 +1829,7 @@ class DAG(TaskSDKDag, LoggingMixin):
 
         log.info("Sync %s DAGs", len(dags))
         dag_op = DagModelOperation(
-            bundle_name=bundle_name, bundle_version=bundle_version, dags={d.dag_id: d for d in dags}
+            bundle_context=bundle_context, dags={d.dag_id: d for d in dags}
         )  # type: ignore[misc]
 
         orm_dags = dag_op.add_dags(session=session)
@@ -1852,10 +1856,21 @@ class DAG(TaskSDKDag, LoggingMixin):
 
         :return: None
         """
+        # TODO: This looks very much like a test-only method, probably it should be deprecated being public.
+        # In particular, it will not work for the attempt to sync non-latest version of bundle, so we fallback
+        # to empty paths.
+        from airflow.models.dagbag import BundleContext
+
         # TODO: AIP-66 should this be in the model?
-        bundle_name = self.get_bundle_name(session=session)
+        bundle_name = self.get_bundle_name(session=session) or ""
         bundle_version = self.get_bundle_version(session=session)
-        self.bulk_write_to_db(bundle_name, bundle_version, [self], session=session)
+        bundle_path = settings.DAGS_FOLDER
+
+        self.bulk_write_to_db(BundleContext(
+            name = bundle_name,
+            root_path = bundle_path,
+            version = bundle_version,
+        ), [self], session=session)
 
     def get_default_view(self):
         """Allow backward compatible jinja2 templates."""
@@ -2025,7 +2040,7 @@ class DagModel(Base):
     # Time when the DAG last received a refresh signal
     # (e.g. the DAG's "refresh" button was clicked in the web UI)
     last_expired = Column(UtcDateTime)
-    # The location of the file containing the DAG object
+    # The location of the file containing the DAG object relative to the bundle root
     # Note: Do not depend on fileloc pointing to a file; in the case of a
     # packaged DAG, it will point to the subpath of the DAG within the
     # associated zip.

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import traceback
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
     from sqlalchemy.sql import Select
 
+    from airflow.models.dagbag import BundleContext
     from airflow.models.dagwarning import DagWarning
     from airflow.serialization.serialized_objects import MaybeSerializedDAG
     from airflow.triggers.base import BaseTrigger
@@ -177,9 +179,7 @@ def _update_dag_owner_links(dag_owner_links: dict[str, str], dm: DagModel, *, se
     )
 
 
-def _serialize_dag_capturing_errors(
-    dag: MaybeSerializedDAG, bundle_name, session: Session, bundle_version: str | None
-):
+def _serialize_dag_capturing_errors(bundle_context: BundleContext, dag: MaybeSerializedDAG, session: Session):
     """
     Try to serialize the dag to the DB, but make a note of any errors.
 
@@ -193,6 +193,7 @@ def _serialize_dag_capturing_errors(
     try:
         # We can't use bulk_write_to_db as we want to capture each error individually
         dag_was_updated = SerializedDagModel.write_dag(
+            bundle_context,
             dag,
             bundle_name=bundle_name,
             bundle_version=bundle_version,
@@ -203,7 +204,7 @@ def _serialize_dag_capturing_errors(
             _sync_dag_perms(dag, session=session)
         else:
             # Check and update DagCode
-            DagCode.update_source_code(dag.dag_id, dag.fileloc)
+            DagCode.update_source_code(dag.dag_id, bundle_context, dag.fileloc)
         return []
     except OperationalError:
         raise
@@ -295,8 +296,7 @@ def _update_import_errors(
 
 
 def update_dag_parsing_results_in_db(
-    bundle_name: str,
-    bundle_version: str | None,
+    bundle_context: BundleContext,
     dags: Collection[MaybeSerializedDAG],
     import_errors: dict[str, str],
     warnings: set[DagWarning],
@@ -334,14 +334,10 @@ def update_dag_parsing_results_in_db(
             )
             log.debug("Calling the DAG.bulk_sync_to_db method")
             try:
-                DAG.bulk_write_to_db(bundle_name, bundle_version, dags, session=session)
+                DAG.bulk_write_to_db(bundle_context, dags, session=session)
                 # Write Serialized DAGs to DB, capturing errors
                 for dag in dags:
-                    serialize_errors.extend(
-                        _serialize_dag_capturing_errors(
-                            dag=dag, bundle_name=bundle_name, bundle_version=bundle_version, session=session
-                        )
-                    )
+                    serialize_errors.extend(_serialize_dag_capturing_errors(bundle_context, dag, session))
             except OperationalError:
                 session.rollback()
                 raise
@@ -354,10 +350,11 @@ def update_dag_parsing_results_in_db(
         # TODO: This won't clear errors for files that exist that no longer contain DAGs. Do we need to pass
         # in the list of file parsed?
 
-        good_dag_filelocs = {dag.fileloc for dag in dags if dag.fileloc not in import_errors}
+        dag_filelocs = (dag.fileloc for dag in dags)
+        good_dag_filelocs = {fileloc for fileloc in dag_filelocs if fileloc not in import_errors}
         _update_import_errors(
             files_parsed=good_dag_filelocs,
-            bundle_name=bundle_name,
+            bundle_name=bundle_context.name,
             import_errors=import_errors,
             session=session,
         )
@@ -377,8 +374,7 @@ class DagModelOperation(NamedTuple):
     """Collect DAG objects and perform database operations for them."""
 
     dags: dict[str, MaybeSerializedDAG]
-    bundle_name: str
-    bundle_version: str | None
+    bundle_context: BundleContext
 
     def find_orm_dags(self, *, session: Session) -> dict[str, DagModel]:
         """Find existing DagModel objects from DAG objects."""
@@ -398,7 +394,7 @@ class DagModelOperation(NamedTuple):
         orm_dags.update(
             (model.dag_id, model)
             for model in _create_orm_dags(
-                bundle_name=self.bundle_name,
+                bundle_name=self.bundle_context.name,
                 dags=(dag for dag_id, dag in self.dags.items() if dag_id not in orm_dags),
                 session=session,
             )
@@ -463,8 +459,8 @@ class DagModelOperation(NamedTuple):
             dm.timetable_summary = dag.timetable.summary
             dm.timetable_description = dag.timetable.description
             dm.asset_expression = dag.timetable.asset_condition.as_expression()
-            dm.bundle_name = self.bundle_name
-            dm.bundle_version = self.bundle_version
+            dm.bundle_name = self.bundle_context.name
+            dm.bundle_version = self.bundle_context.version
 
             last_automated_run: DagRun | None = run_info.latest_runs.get(dag.dag_id)
             if last_automated_run is None:

@@ -594,7 +594,7 @@ USER airflow
 
 {extra_copy_command}
 
-COPY --chown=airflow:0 airflow/example_dags/ /opt/airflow/dags/
+COPY --chown=airflow:0 airflow/example_dags/ /opt/airflow/dags
 
 COPY --chown=airflow:0 providers/src/airflow/providers/cncf/kubernetes/kubernetes_executor_templates/ /opt/airflow/pod_templates/
 

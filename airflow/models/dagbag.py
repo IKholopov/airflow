@@ -28,6 +28,7 @@ import traceback
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy import (
@@ -92,6 +93,12 @@ class FileLoadStat(NamedTuple):
     warning_num: int
 
 
+class BundleContext(NamedTuple):
+    name: str
+    root_path: str | Path
+    version: str | None
+
+
 class DagBag(LoggingMixin):
     """
     A dagbag is a collection of dags, parsed out of a folder tree and has high level configuration settings.
@@ -115,6 +122,8 @@ class DagBag(LoggingMixin):
         are not loaded to not run User code in Scheduler.
     :param collect_dags: when True, collects dags during class initialization.
     :param known_pools: If not none, then generate warnings if a Task attempts to use an unknown pool.
+    :param bundle_context: Bundle context for DAG collection. If set, imported DAGs are interpreted
+        as being in-bundle and will have their filelocs adjusted to be from the bundle root.
     """
 
     def __init__(
@@ -126,10 +135,9 @@ class DagBag(LoggingMixin):
         load_op_links: bool = True,
         collect_dags: bool = True,
         known_pools: set[str] | None = None,
-        bundle_path: Path | None = None,
+        bundle_context: BundleContext | None = None,
     ):
         super().__init__()
-        self.bundle_path: Path | None = bundle_path
         include_examples = (
             include_examples
             if isinstance(include_examples, bool)
@@ -157,6 +165,14 @@ class DagBag(LoggingMixin):
 
         self.dagbag_import_error_tracebacks = conf.getboolean("core", "dagbag_import_error_tracebacks")
         self.dagbag_import_error_traceback_depth = conf.getint("core", "dagbag_import_error_traceback_depth")
+
+        self.bundle_context = bundle_context
+        if self.bundle_context and not Path(self.dag_folder).is_relative_to(self.bundle_context.root_path):
+            raise AirflowException(
+                f"Provided DAG folder {self.dag_folder} is not a subpath of "
+                f"provided bundle: {self.bundle_context.root_path}"
+            )
+
         if collect_dags:
             self.collect_dags(
                 dag_folder=dag_folder,
@@ -391,13 +407,18 @@ class DagBag(LoggingMixin):
                 # raises an exception which does not inherit from Exception, and we want to catch that here.
                 # This would also catch `exit()` in a dag file
                 DagContext.autoregistered_dags.clear()
+                
                 self.log.exception("Failed to import: %s", filepath)
+                if self.bundle_context:
+                    fileloc = os.path.relpath(filepath, self.bundle_context.root_path) 
+                else :
+                    fileloc = filepath
                 if self.dagbag_import_error_tracebacks:
-                    self.import_errors[filepath] = traceback.format_exc(
+                    self.import_errors[fileloc] = traceback.format_exc(
                         limit=-self.dagbag_import_error_traceback_depth
                     )
                 else:
-                    self.import_errors[filepath] = str(e)
+                    self.import_errors[fileloc] = str(e)
                 return []
 
         dagbag_import_timeout = settings.get_dagbag_import_timeout(filepath)
@@ -456,6 +477,8 @@ class DagBag(LoggingMixin):
                 except Exception as e:
                     DagContext.autoregistered_dags.clear()
                     fileloc = os.path.join(filepath, zip_info.filename)
+                    if self.bundle_context:
+                        fileloc = os.path.relpath(fileloc, self.bundle_context.root_path)
                     self.log.exception("Failed to import: %s", fileloc)
                     if self.dagbag_import_error_tracebacks:
                         self.import_errors[fileloc] = traceback.format_exc(
@@ -482,11 +505,7 @@ class DagBag(LoggingMixin):
         found_dags = []
 
         for dag, mod in top_level_dags:
-            dag.fileloc = mod.__file__
-            if self.bundle_path:
-                dag.relative_fileloc = str(Path(mod.__file__).relative_to(self.bundle_path))
-            else:
-                dag.relative_fileloc = dag.fileloc
+            dag.fileloc = self._make_dag_fileloc(mod)
             try:
                 dag.validate()
                 self.bag_dag(dag=dag)
@@ -499,6 +518,13 @@ class DagBag(LoggingMixin):
             else:
                 found_dags.append(dag)
         return found_dags
+
+    def _make_dag_fileloc(self, mod: ModuleType) -> str:
+        if not self.bundle_context:
+            # Standalone ingestion - use absolute path.
+            return mod.__file__
+        # Part of the bundle - use path from the bundle root.
+        return os.path.relpath(mod.__file__, self.bundle_context.root_path)
 
     def bag_dag(self, dag: DAG):
         """
@@ -642,13 +668,18 @@ class DagBag(LoggingMixin):
         return report
 
     @provide_session
-    def sync_to_db(self, bundle_name: str, bundle_version: str | None, session: Session = NEW_SESSION):
+    def sync_to_db(self, session: Session = NEW_SESSION):
         """Save attributes about list of DAG to the DB."""
         from airflow.dag_processing.collection import update_dag_parsing_results_in_db
 
+        if not self.bundle_context:
+            raise AirflowException(
+                "Syncing DAGs to DB requires a bundle context to be set "
+                "in the DagBag in airflow>=3.0.0, but it was not set."
+            )
+
         update_dag_parsing_results_in_db(
-            bundle_name,
-            bundle_version,
+            self.bundle_context,
             self.dags.values(),  # type: ignore[arg-type]  # We should create a proto for DAG|LazySerializedDAG
             self.import_errors,
             self.dag_warnings,

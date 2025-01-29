@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
     from airflow.models import Operator
     from airflow.models.dag import DAG
+    from airflow.models.dagbag import BundleContext
     from airflow.serialization.serialized_objects import LazyDeserializedDAG
 
 log = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ class SerializedDagModel(Base):
     @provide_session
     def write_dag(
         cls,
+        bundle_context: BundleContext,
         dag: DAG | LazyDeserializedDAG,
         bundle_name: str,
         bundle_version: str | None = None,
@@ -214,7 +216,7 @@ class SerializedDagModel(Base):
         new_serialized_dag.dag_version = dagv
         session.add(new_serialized_dag)
         log.debug("DAG: %s written to the DB", dag.dag_id)
-        DagCode.write_code(dagv, dag.fileloc, session=session)
+        DagCode.write_code(dagv, bundle_context, dag.fileloc, session=session)
         return True
 
     @classmethod

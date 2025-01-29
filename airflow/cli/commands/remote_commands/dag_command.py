@@ -35,7 +35,7 @@ from airflow.api_connexion.schemas.dag_schema import dag_schema
 from airflow.cli.simple_table import AirflowConsole
 from airflow.exceptions import AirflowException
 from airflow.jobs.job import Job
-from airflow.models import DagBag, DagModel, DagRun, TaskInstance
+from airflow.models import BundleContext, DagBag, DagModel, DagRun, TaskInstance
 from airflow.models.serialized_dag import SerializedDagModel
 from airflow.sdk.definitions._internal.dag_parsing_context import _airflow_parsing_context_manager
 from airflow.utils import cli as cli_utils, timezone
@@ -546,10 +546,25 @@ def dag_reserialize(args, session: Session = NEW_SESSION) -> None:
         bundle = manager.get_bundle(args.bundle_name)
         if not bundle:
             raise SystemExit(f"Bundle {args.bundle_name} not found")
-        dag_bag = DagBag(bundle.path, include_examples=False)
-        dag_bag.sync_to_db(bundle.name, bundle_version=bundle.get_current_version(), session=session)
+
+        bundle_context=BundleContext(
+                name = bundle.name,
+                root_path = bundle.path,
+                version = bundle.get_current_version(),   
+            )
+        dag_bag = DagBag(
+                bundle.path, 
+                include_examples=False, 
+                bundle_context=bundle_context,
+            )
+        dag_bag.sync_to_db(session=session)
     else:
         bundles = manager.get_all_dag_bundles()
         for bundle in bundles:
-            dag_bag = DagBag(bundle.path, include_examples=False)
-            dag_bag.sync_to_db(bundle.name, bundle_version=bundle.get_current_version(), session=session)
+            bundle_context=BundleContext(
+                name = bundle.name,
+                root_path = bundle.path,
+                version = bundle.get_current_version(),   
+            )
+            dag_bag = DagBag(bundle.path, include_examples=False, bundle_context=bundle_context)
+            dag_bag.sync_to_db(session=session)

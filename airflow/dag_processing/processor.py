@@ -31,7 +31,7 @@ from airflow.callbacks.callback_requests import (
     TaskCallbackRequest,
 )
 from airflow.configuration import conf
-from airflow.models.dagbag import DagBag
+from airflow.models.dagbag import BundleContext, DagBag
 from airflow.sdk.execution_time.comms import GetConnection, GetVariable
 from airflow.sdk.execution_time.supervisor import WatchedSubprocess
 from airflow.serialization.serialized_objects import LazyDeserializedDAG, SerializedDAG
@@ -73,11 +73,11 @@ def _parse_file_entrypoint():
 def _parse_file(msg: DagFileParseRequest, log: FilteringBoundLogger) -> DagFileParsingResult:
     # TODO: Set known_pool names on DagBag!
     bag = DagBag(
-        dag_folder=msg.file,
-        bundle_path=msg.bundle_path,
+        dag_folder=os.path.join(os.fspath(msg.bundle_context.root_path), os.fspath(msg.file)),
         include_examples=False,
         safe_mode=True,
         load_op_links=False,
+        bundle_context=msg.bundle_context,
     )
     serialized_dags, serialization_import_errors = _serialize_dags(bag, log)
     bag.import_errors.update(serialization_import_errors)
@@ -159,7 +159,9 @@ class DagFileParseRequest(BaseModel):
     This is the request that the manager will send to the DAG parser with the dag file and
     any other necessary metadata.
     """
-
+    # Context of bundle being parsed.
+    bundle_context: BundleContext
+    # Filepath from the root of the bundle (relative).
     file: str
 
     bundle_path: Path
@@ -210,25 +212,20 @@ class DagFileProcessorProcess(WatchedSubprocess):
     def start(  # type: ignore[override]
         cls,
         *,
-        path: str | os.PathLike[str],
-        bundle_path: Path,
+        bundle_context: BundleContext,
+        file_path: str | os.PathLike[str],
         callbacks: list[CallbackRequest],
         target: Callable[[], None] = _parse_file_entrypoint,
         **kwargs,
     ) -> Self:
         proc: Self = super().start(target=target, **kwargs)
-        proc._on_child_started(callbacks, path, bundle_path)
+        proc._on_child_started(callbacks, bundle_context, file_path)
         return proc
 
-    def _on_child_started(
-        self,
-        callbacks: list[CallbackRequest],
-        path: str | os.PathLike[str],
-        bundle_path: Path,
-    ) -> None:
+    def _on_child_started(self, callbacks: list[CallbackRequest], bundle_context: BundleContext, file_path: str | os.PathLike[str]) -> None:
         msg = DagFileParseRequest(
-            file=os.fspath(path),
-            bundle_path=bundle_path,
+            bundle_context=bundle_context,
+            file=file_path,
             requests_fd=self._requests_fd,
             callback_requests=callbacks,
         )

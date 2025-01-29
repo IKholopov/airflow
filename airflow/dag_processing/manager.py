@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, cast
 
 import attrs
 import structlog
@@ -50,7 +50,7 @@ from airflow.dag_processing.collection import update_dag_parsing_results_in_db
 from airflow.dag_processing.processor import DagFileParsingResult, DagFileProcessorProcess
 from airflow.exceptions import AirflowException
 from airflow.models.dag import DagModel
-from airflow.models.dagbag import DagPriorityParsingRequest
+from airflow.models.dagbag import BundleContext, DagPriorityParsingRequest
 from airflow.models.dagbundle import DagBundleModel
 from airflow.models.dagwarning import DagWarning
 from airflow.models.db_callback_request import DbCallbackRequest
@@ -102,7 +102,7 @@ log = logging.getLogger("airflow.processor_manager")
 class DagFileInfo:
     """Information about a DAG file."""
 
-    path: str  # absolute path of the file
+    path: str  # relative path of the file
     bundle_name: str
     bundle_path: Path | None = field(compare=False, default=None)
 
@@ -175,7 +175,7 @@ class DagFileProcessorManager:
         factory=lambda: defaultdict(DagFileStat), init=False
     )
 
-    _dag_bundles: list[BaseDagBundle] = attrs.field(factory=list, init=False)
+    _dag_bundles: dict[str, BaseDagBundle] = attrs.field(factory=dict, init=False)
     _bundle_versions: dict[str, str] = attrs.field(factory=dict, init=False)
 
     _processors: dict[DagFileInfo, DagFileProcessorProcess] = attrs.field(factory=dict, init=False)
@@ -230,10 +230,13 @@ class DagFileProcessorManager:
         DagBundlesManager().sync_bundles_to_db()
 
         self.log.info("Getting all DAG bundles")
-        self._dag_bundles = list(DagBundlesManager().get_all_dag_bundles())
+        self._dag_bundles = {bundle.name: bundle for bundle in DagBundlesManager().get_all_dag_bundles()}
         self._symlink_latest_log_directory()
 
         return self._run_parsing_loop()
+
+    def _dag_full_path(self, file_info: DagFileInfo) -> str:
+        return os.path.join(self._dag_bundles[file_info.bundle_name].path, file_info.path)
 
     def _scan_stale_dags(self):
         """Scan and deactivate DAGs which are no longer present in files."""
@@ -435,7 +438,9 @@ class DagFileProcessorManager:
 
         self.log.info("Refreshing DAG bundles")
 
-        for bundle in self._dag_bundles:
+        for bundle_name in self._dag_bundles:
+            bundle = self._dag_bundles[bundle_name]
+
             # TODO: AIP-66 handle errors in the case of incomplete cloning? And test this.
             #  What if the cloning/refreshing took too long(longer than the dag processor timeout)
             if not bundle.is_initialized:
@@ -483,7 +488,7 @@ class DagFileProcessorManager:
                         "Version changed for %s, new version: %s", bundle.name, version_after_refresh
                     )
 
-            bundle_file_paths = self._find_files_in_bundle(bundle)
+            bundle_file_paths = set(self._find_files_in_bundle(bundle))
 
             new_file_paths = [f for f in self._file_paths if f.bundle_name != bundle.name]
             new_file_paths.extend(
@@ -497,14 +502,14 @@ class DagFileProcessorManager:
 
             self._bundle_versions[bundle.name] = bundle.get_current_version()
 
-    def _find_files_in_bundle(self, bundle: BaseDagBundle) -> list[str]:
+    def _find_files_in_bundle(self, bundle: BaseDagBundle) -> Iterable[str]:
         """Refresh file paths from bundle dir."""
         # Build up a list of Python files that could contain DAGs
         self.log.info("Searching for files in %s at %s", bundle.name, bundle.path)
         file_paths = list_py_file_paths(bundle.path)
         self.log.info("Found %s files for bundle %s", len(file_paths), bundle.name)
 
-        return file_paths
+        return (os.path.relpath(f, bundle.path) for f in file_paths)
 
     def deactivate_deleted_dags(self, file_paths: set[str]) -> None:
         """Deactivate DAGs that come from files that are no longer present."""
@@ -701,13 +706,16 @@ class DagFileProcessorManager:
                 continue
             finished.append(dag_file)
 
+            bundle_context = BundleContext(name = dag_file.bundle_name,
+                                           root_path = self._dag_bundles[dag_file.bundle_name].path,
+                                           version = self._bundle_versions[dag_file.bundle_name])
+
             # Collect the DAGS and import errors into the DB, emit metrics etc.
             self._file_stats[dag_file] = process_parse_results(
                 run_duration=time.time() - proc.start_time,
                 finish_time=timezone.utcnow(),
                 run_count=self._file_stats[dag_file].run_count,
-                bundle_name=dag_file.bundle_name,
-                bundle_version=self._bundle_versions[dag_file.bundle_name],
+                bundle_context=bundle_context,
                 parsing_result=proc.parsing_result,
                 session=session,
             )
@@ -749,9 +757,8 @@ class DagFileProcessorManager:
             self._symlink_latest_log_directory()
             self._latest_log_symlink_date = datetime.today()
 
-        bundle = next(b for b in self._dag_bundles if b.name == dag_file.bundle_name)
-        relative_path = Path(dag_file.path).relative_to(bundle.path)
-        return os.path.join(self._get_log_dir(), bundle.name, f"{relative_path}.log")
+        bundle = next(self._dag_bundles[b] for b in self._dag_bundles if b == dag_file.bundle_name)
+        return os.path.join(self._get_log_dir(), bundle.name, f"{dag_file.path}.log")
 
     def _get_logger_for_dag_file(self, dag_file: DagFileInfo):
         log_filename = self._render_log_filename(dag_file)
@@ -760,19 +767,25 @@ class DagFileProcessorManager:
         processors = logging_processors(enable_pretty_log=False)[0]
         return structlog.wrap_logger(underlying_logger, processors=processors, logger_name="processor").bind()
 
-    def _create_process(self, dag_file: DagFileInfo) -> DagFileProcessorProcess:
+    def _create_process(self, file_info: DagFileInfo) -> DagFileProcessorProcess:
         id = uuid7()
 
         # callback_to_execute_for_file = self._callback_to_execute.pop(file_path, [])
         callback_to_execute_for_file: list[CallbackRequest] = []
+        bundle = self._dag_bundles[file_info.bundle_name]
+        bundle_context = BundleContext(
+            name=bundle.name,
+            root_path=bundle.path,
+            version=bundle.version,
+        )
 
         return DagFileProcessorProcess.start(
             id=id,
-            path=dag_file.path,
-            bundle_path=cast(Path, dag_file.bundle_path),
+            bundle_context=bundle_context,
+            file_path=file_info.path,
             callbacks=callback_to_execute_for_file,
             selector=self.selector,
-            logger=self._get_logger_for_dag_file(dag_file),
+            logger=self._get_logger_for_dag_file(file_info),
         )
 
     def _start_new_processes(self):
@@ -820,7 +833,7 @@ class DagFileProcessorManager:
         for file_path in self._file_paths:
             if is_mtime_mode:
                 try:
-                    files_with_mtime[file_path] = os.path.getmtime(file_path.path)
+                    files_with_mtime[file_path] = os.path.getmtime(self._dag_full_path(file_path))
                 except FileNotFoundError:
                     self.log.warning("Skipping processing of missing file: %s", file_path)
                     self._file_stats.pop(file_path, None)
@@ -998,8 +1011,7 @@ def process_parse_results(
     run_duration: float,
     finish_time: datetime,
     run_count: int,
-    bundle_name: str,
-    bundle_version: str | None,
+    bundle_context: BundleContext,
     parsing_result: DagFileParsingResult | None,
     session: Session,
 ) -> DagFileStat:
@@ -1020,8 +1032,7 @@ def process_parse_results(
     else:
         # record DAGs and import errors to database
         update_dag_parsing_results_in_db(
-            bundle_name=bundle_name,
-            bundle_version=bundle_version,
+            bundle_context=bundle_context,
             dags=parsing_result.serialized_dags,
             import_errors=parsing_result.import_errors or {},
             warnings=set(parsing_result.warnings or []),

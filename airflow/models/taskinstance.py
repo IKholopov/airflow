@@ -25,6 +25,7 @@ import logging
 import math
 import operator
 import os
+from pathlib import Path
 import signal
 import traceback
 from collections import defaultdict
@@ -1947,13 +1948,18 @@ class TaskInstance(Base, LoggingMixin):
         if dag is None:
             raise ValueError("DagModel is empty")
 
-        path = None
-        if dag.relative_fileloc:
-            path = Path(dag.relative_fileloc)
+        path = Path(dag.fileloc)
 
         if path:
             if not path.is_absolute():
-                path = "DAGS_FOLDER" / path
+                from airflow.dag_processing.bundles.manager import DagBundlesManager
+                # TODO: AIP-66/72 - This is a temporary non-version aware workaround to not break executors
+                #       that are still being ported to TaskSDK.
+                bundle_instance = DagBundlesManager().get_bundle(
+                    name=ti.dag_model.bundle_name,
+                )
+                
+                path = os.path.join(bundle_instance.path, path)
 
         return TaskInstance.generate_command(
             ti.dag_id,

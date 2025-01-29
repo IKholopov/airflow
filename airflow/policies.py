@@ -115,6 +115,7 @@ def get_dagbag_import_timeout(dag_file_path: str) -> int | float:  # type: ignor
 
     If the return value is less than or equal to 0, it means no timeout during the DAG parsing.
     """
+    # TODO: AIP-66 - make bundle-aware
 
 
 class DefaultPolicy:

@@ -300,9 +300,7 @@ def _run_task_by_executor(args, dag: DAG, ti: TaskInstance) -> None:
     if executor.queue_workload.__func__ is not BaseExecutor.queue_workload:  # type: ignore[attr-defined]
         from airflow.executors import workloads
 
-        if TYPE_CHECKING:
-            assert dag.relative_fileloc
-        workload = workloads.ExecuteTask.make(ti, dag_rel_path=Path(dag.relative_fileloc))
+        workload = workloads.ExecuteTask.make(ti, dag_rel_path=Path(dag.fileloc))
         with create_session() as session:
             executor.queue_workload(workload, session)
     else:
