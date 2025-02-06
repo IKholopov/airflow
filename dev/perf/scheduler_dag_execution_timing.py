@@ -28,6 +28,8 @@ from operator import attrgetter
 
 import rich_click as click
 
+from airflow.dag_processing.bundles.manager import DagBundlesManager
+from airflow.dag_processing.parse_info import ParseBundleInfo
 from airflow.jobs.job import run_job
 from airflow.utils.types import DagRunTriggeredByType
 
@@ -229,6 +231,8 @@ def main(num_runs, repeat, pre_create_dag_runs, executor_class, dag_ids):
     It is recommended to repeat the test at least 3 times (`--repeat=3`, the
     default) so that you can get somewhat-accurate variance on the reported
     timing numbers, but this can be disabled for longer runs if needed.
+
+    Only default "dag-folder" bundle is supported.
     """
 
     # Turn on unit test mode so that we don't do any sleep() in the scheduler
@@ -252,13 +256,23 @@ def main(num_runs, repeat, pre_create_dag_runs, executor_class, dag_ids):
 
     dagbag = DagBag()
 
+    manager = DagBundlesManager()
+    manager.sync_bundles_to_db()
+    bundle_name = "dags-folder"
+    bundle = manager.get_bundle(bundle_name)
+    bundle.initialize()
+    bundle_info = ParseBundleInfo(
+        name=bundle_name,
+        root_path=bundle.path,
+    )
+
     dags = []
 
     with db.create_session() as session:
         pause_all_dags(session)
         for dag_id in dag_ids:
             dag = dagbag.get_dag(dag_id)
-            dag.sync_to_db(session=session)
+            dag.sync_to_db(bundle_info=bundle_info, session=session)
             dags.append(dag)
             reset_dag(dag, session)
 

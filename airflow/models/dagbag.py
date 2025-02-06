@@ -67,6 +67,7 @@ from airflow.utils.warnings import capture_with_reraise
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from airflow.dag_processing.parse_info import ParseBundleInfo
     from airflow.models.dag import DAG
     from airflow.models.dagwarning import DagWarning
     from airflow.utils.types import ArgNotSet
@@ -642,16 +643,15 @@ class DagBag(LoggingMixin):
         return report
 
     @provide_session
-    def sync_to_db(self, bundle_name: str, bundle_version: str | None, session: Session = NEW_SESSION):
+    def sync_to_db(self, bundle_info: ParseBundleInfo, session: Session = NEW_SESSION):
         """Save attributes about list of DAG to the DB."""
         from airflow.dag_processing.collection import update_dag_parsing_results_in_db
 
         update_dag_parsing_results_in_db(
-            bundle_name,
-            bundle_version,
-            self.dags.values(),  # type: ignore[arg-type]  # We should create a proto for DAG|LazySerializedDAG
-            self.import_errors,
-            self.dag_warnings,
+            bundle_info=bundle_info,
+            dags=self.dags.values(),  # type: ignore[arg-type]  # We should create a proto for DAG|LazySerializedDAG
+            import_errors=self.import_errors,
+            warnings=self.dag_warnings,
             session=session,
         )
 

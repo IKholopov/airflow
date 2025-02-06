@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
+    from airflow.dag_processing.parse_info import ParseBundleInfo
     from airflow.models import Operator
     from airflow.models.dag import DAG
     from airflow.serialization.serialized_objects import LazyDeserializedDAG
@@ -165,8 +166,7 @@ class SerializedDagModel(Base):
     def write_dag(
         cls,
         dag: DAG | LazyDeserializedDAG,
-        bundle_name: str,
-        bundle_version: str | None = None,
+        bundle_info: ParseBundleInfo,
         min_update_interval: int | None = None,
         session: Session = NEW_SESSION,
     ) -> bool:
@@ -206,15 +206,20 @@ class SerializedDagModel(Base):
 
         dagv = DagVersion.write_dag(
             dag_id=dag.dag_id,
-            bundle_name=bundle_name,
-            bundle_version=bundle_version,
+            bundle_name=bundle_info.name,
+            bundle_version=bundle_info.version,
             session=session,
         )
         log.debug("Writing Serialized DAG: %s to the DB", dag.dag_id)
         new_serialized_dag.dag_version = dagv
         session.add(new_serialized_dag)
         log.debug("DAG: %s written to the DB", dag.dag_id)
-        DagCode.write_code(dagv, dag.fileloc, session=session)
+
+        if TYPE_CHECKING:
+            assert dag.relative_fileloc
+        DagCode.write_code(
+            dagv, rel_fileloc=dag.relative_fileloc, bundle_path=str(bundle_info.root_path), session=session
+        )
         return True
 
     @classmethod
@@ -345,8 +350,7 @@ class SerializedDagModel(Base):
     @provide_session
     def bulk_sync_to_db(
         dags: list[DAG] | list[LazyDeserializedDAG],
-        bundle_name: str,
-        bundle_version: str | None = None,
+        bundle_info: ParseBundleInfo,
         session: Session = NEW_SESSION,
     ) -> None:
         """
@@ -361,8 +365,7 @@ class SerializedDagModel(Base):
         for dag in dags:
             SerializedDagModel.write_dag(
                 dag=dag,
-                bundle_name=bundle_name,
-                bundle_version=bundle_version,
+                bundle_info=bundle_info,
                 min_update_interval=MIN_SERIALIZED_DAG_UPDATE_INTERVAL,
                 session=session,
             )

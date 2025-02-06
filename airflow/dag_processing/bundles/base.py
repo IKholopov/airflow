@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from airflow.configuration import conf
+from airflow.dag_processing.parse_info import ParseBundleInfo
 
 
 class BaseDagBundle(ABC):
@@ -87,6 +88,19 @@ class BaseDagBundle(ABC):
         if configured_location := conf.get("dag_processor", "dag_bundle_storage_path", fallback=None):
             return Path(configured_location)
         return Path(tempfile.gettempdir(), "airflow", "dag_bundles")
+
+    @property
+    def info(self) -> ParseBundleInfo:
+        """
+        The serializable summary of bundle state.
+
+        Used to pass bundle metadata in DAG processor and workers.
+        """
+        return ParseBundleInfo(
+            name=self.name,
+            root_path=self.path,
+            version=self.get_current_version(),
+        )
 
     @property
     @abstractmethod

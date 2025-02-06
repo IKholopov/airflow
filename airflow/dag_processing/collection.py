@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
     from sqlalchemy.sql import Select
 
+    from airflow.dag_processing.parse_info import ParseBundleInfo
     from airflow.models.dagwarning import DagWarning
     from airflow.serialization.serialized_objects import MaybeSerializedDAG
     from airflow.typing_compat import Self
@@ -175,9 +176,7 @@ def _update_dag_owner_links(dag_owner_links: dict[str, str], dm: DagModel, *, se
     )
 
 
-def _serialize_dag_capturing_errors(
-    dag: MaybeSerializedDAG, bundle_name, session: Session, bundle_version: str | None
-):
+def _serialize_dag_capturing_errors(dag: MaybeSerializedDAG, bunlde_info: ParseBundleInfo, session: Session):
     """
     Try to serialize the dag to the DB, but make a note of any errors.
 
@@ -192,16 +191,19 @@ def _serialize_dag_capturing_errors(
         # We can't use bulk_write_to_db as we want to capture each error individually
         dag_was_updated = SerializedDagModel.write_dag(
             dag,
-            bundle_name=bundle_name,
-            bundle_version=bundle_version,
+            bundle_info=bunlde_info,
             min_update_interval=settings.MIN_SERIALIZED_DAG_UPDATE_INTERVAL,
             session=session,
         )
         if dag_was_updated:
             _sync_dag_perms(dag, session=session)
         else:
+            if TYPE_CHECKING:
+                assert dag.relative_fileloc
             # Check and update DagCode
-            DagCode.update_source_code(dag.dag_id, dag.fileloc)
+            DagCode.update_source_code(
+                dag.dag_id, rel_fileloc=dag.relative_fileloc, bundle_path=str(bunlde_info.root_path)
+            )
         return []
     except OperationalError:
         raise
@@ -294,8 +296,7 @@ def _update_import_errors(
 
 
 def update_dag_parsing_results_in_db(
-    bundle_name: str,
-    bundle_version: str | None,
+    bundle_info: ParseBundleInfo,
     dags: Collection[MaybeSerializedDAG],
     import_errors: dict[str, str],
     warnings: set[DagWarning],
@@ -331,15 +332,13 @@ def update_dag_parsing_results_in_db(
                 attempt.retry_state.attempt_number,
                 MAX_DB_RETRIES,
             )
-            log.debug("Calling the DAG.bulk_sync_to_db method")
+            log.debug("Calling the DAG.bulk_write_to_db method")
             try:
-                DAG.bulk_write_to_db(bundle_name, bundle_version, dags, session=session)
+                DAG.bulk_write_to_db(bundle_info.name, bundle_info.version, dags, session=session)
                 # Write Serialized DAGs to DB, capturing errors
                 for dag in dags:
                     serialize_errors.extend(
-                        _serialize_dag_capturing_errors(
-                            dag=dag, bundle_name=bundle_name, bundle_version=bundle_version, session=session
-                        )
+                        _serialize_dag_capturing_errors(dag=dag, bunlde_info=bundle_info, session=session)
                     )
             except OperationalError:
                 session.rollback()
@@ -356,7 +355,7 @@ def update_dag_parsing_results_in_db(
         good_dag_filelocs = {dag.fileloc for dag in dags if dag.fileloc not in import_errors}
         _update_import_errors(
             files_parsed=good_dag_filelocs,
-            bundle_name=bundle_name,
+            bundle_name=bundle_info.name,
             import_errors=import_errors,
             session=session,
         )

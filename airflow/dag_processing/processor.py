@@ -204,6 +204,7 @@ class DagFileProcessorProcess(WatchedSubprocess):
 
     parsing_result: DagFileParsingResult | None = None
     decoder: TypeAdapter[ToParent] = TypeAdapter[ToParent](ToParent)
+    parse_file_info: ParseFileInfo
 
     @classmethod
     def start(  # type: ignore[override]
@@ -214,7 +215,7 @@ class DagFileProcessorProcess(WatchedSubprocess):
         target: Callable[[], None] = _parse_file_entrypoint,
         **kwargs,
     ) -> Self:
-        proc: Self = super().start(target=target, **kwargs)
+        proc: Self = super().start(target=target, parse_file_info=parse_file_info, **kwargs)
         proc._on_child_started(callbacks, parse_file_info)
         return proc
 

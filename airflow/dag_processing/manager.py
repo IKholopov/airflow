@@ -508,11 +508,7 @@ class DagFileProcessorManager(LoggingMixin):
         self.log.info("Found %s files for bundle %s", len(file_paths), bundle.name)
 
         rel_paths = (Path(x).relative_to(bundle.path) for x in file_paths)
-        bundle_info = ParseBundleInfo(
-            name=bundle.name,
-            root_path=bundle.path,
-            version=bundle.version,
-        )
+        bundle_info = bundle.info
         return (ParseFileInfo(rel_path=p, bundle=bundle_info) for p in rel_paths)
 
     def deactivate_deleted_dags(self, bundle_name: str, present: set[ParseFileInfo]) -> None:
@@ -735,8 +731,7 @@ class DagFileProcessorManager(LoggingMixin):
                 run_duration=time.time() - proc.start_time,
                 finish_time=timezone.utcnow(),
                 run_count=self._entrypoint_stats[entrypoint].run_count,
-                bundle_name=entrypoint.bundle_name,
-                bundle_version=self._bundle_versions[entrypoint.bundle_name],
+                parse_file_info=proc.parse_file_info,
                 parsing_result=proc.parsing_result,
                 session=session,
             )
@@ -1026,8 +1021,7 @@ def process_parse_results(
     run_duration: float,
     finish_time: datetime,
     run_count: int,
-    bundle_name: str,
-    bundle_version: str | None,
+    parse_file_info: ParseFileInfo,
     parsing_result: DagFileParsingResult | None,
     session: Session,
 ) -> DagFileStat:
@@ -1048,8 +1042,7 @@ def process_parse_results(
     else:
         # record DAGs and import errors to database
         update_dag_parsing_results_in_db(
-            bundle_name=bundle_name,
-            bundle_version=bundle_version,
+            bundle_info=parse_file_info.bundle,
             dags=parsing_result.serialized_dags,
             import_errors=parsing_result.import_errors or {},
             warnings=set(parsing_result.warnings or []),

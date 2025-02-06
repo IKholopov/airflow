@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import uuid6
@@ -56,6 +57,7 @@ class DagCode(Base):
     __tablename__ = "dag_code"
     id = Column(UUIDType(binary=False), primary_key=True, default=uuid6.uuid7)
     dag_id = Column(String(ID_LEN), nullable=False)
+    # Fileloc, relative from bundle root.
     fileloc = Column(String(2000), nullable=False)
     # The max length of fileloc exceeds the limit of indexing.
     last_updated = Column(UtcDateTime, nullable=False, default=timezone.utcnow, onupdate=timezone.utcnow)
@@ -66,24 +68,27 @@ class DagCode(Base):
     )
     dag_version = relationship("DagVersion", back_populates="dag_code", uselist=False)
 
-    def __init__(self, dag_version, full_filepath: str, source_code: str | None = None):
+    def __init__(self, dag_version, rel_filepath: str, source_code: str | None = None):
         self.dag_version = dag_version
-        self.fileloc = full_filepath
+        self.fileloc = rel_filepath
         self.source_code = source_code or DagCode.code(self.dag_version.dag_id)
         self.source_code_hash = self.dag_source_hash(self.source_code)
         self.dag_id = dag_version.dag_id
 
     @classmethod
     @provide_session
-    def write_code(cls, dag_version: DagVersion, fileloc: str, session: Session = NEW_SESSION) -> DagCode:
+    def write_code(
+        cls, dag_version: DagVersion, rel_fileloc: str, bundle_path: str, session: Session = NEW_SESSION
+    ) -> DagCode:
         """
         Write code into database.
 
         :param fileloc: file path of DAG to sync
         :param session: ORM Session
         """
+        fileloc = str(Path(bundle_path, rel_fileloc))
         log.debug("Writing DAG file %s into DagCode table", fileloc)
-        dag_code = DagCode(dag_version, fileloc, cls.get_code_from_file(fileloc))
+        dag_code = DagCode(dag_version, rel_fileloc, cls.get_code_from_file(fileloc))
         session.add(dag_code)
         log.debug("DAG file %s written into DagCode table", fileloc)
         return dag_code
@@ -113,7 +118,7 @@ class DagCode(Base):
         return cls._get_code_from_db(dag_id, session)
 
     @staticmethod
-    def get_code_from_file(fileloc):
+    def get_code_from_file(fileloc: str):
         try:
             with open_maybe_zipped(fileloc, "r") as f:
                 code = f.read()
@@ -169,7 +174,9 @@ class DagCode(Base):
 
     @classmethod
     @provide_session
-    def update_source_code(cls, dag_id: str, fileloc: str, session: Session = NEW_SESSION) -> None:
+    def update_source_code(
+        cls, dag_id: str, rel_fileloc: str, bundle_path: str, session: Session = NEW_SESSION
+    ) -> None:
         """
         Check if the source code of the DAG has changed and update it if needed.
 
@@ -181,7 +188,7 @@ class DagCode(Base):
         latest_dagcode = cls.get_latest_dagcode(dag_id, session)
         if not latest_dagcode:
             return
-        new_source_code = cls.get_code_from_file(fileloc)
+        new_source_code = cls.get_code_from_file(str(Path(bundle_path, rel_fileloc)))
         new_source_code_hash = cls.dag_source_hash(new_source_code)
         if new_source_code_hash != latest_dagcode.source_code_hash:
             latest_dagcode.source_code = new_source_code

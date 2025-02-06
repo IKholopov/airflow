@@ -560,4 +560,4 @@ def dag_reserialize(args, session: Session = NEW_SESSION) -> None:
             continue
         bundle.initialize()
         dag_bag = DagBag(bundle.path, include_examples=False)
-        dag_bag.sync_to_db(bundle.name, bundle_version=bundle.get_current_version(), session=session)
+        dag_bag.sync_to_db(bundle_info=bundle.info, session=session)
